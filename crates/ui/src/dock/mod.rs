@@ -748,6 +748,26 @@ impl DockArea {
         }
     }
 
+    /// Hide any dock whose root panel is empty (either a bare TabPanel with no
+    /// panels or a root StackPanel that lost its last child). Called after a
+    /// panel is removed or dragged away so a dock never shows an empty tab
+    /// group. Side docks remain visible and reopen via the top-bar toggle.
+    pub(crate) fn hide_dock_if_empty(&self, window: &mut Window, cx: &mut Context<Self>) {
+        for dock in [&self.left_dock, &self.bottom_dock, &self.right_dock] {
+            let Some(dock) = dock else {
+                continue;
+            };
+            let empty = match &dock.read(cx).panel {
+                DockItem::Tabs { view, .. } => view.read(cx).panels.is_empty(),
+                DockItem::Split { view, .. } => view.read(cx).panels.is_empty(),
+                _ => false,
+            };
+            if empty {
+                dock.update(cx, |dock, cx| dock.set_open(false, window, cx));
+            }
+        }
+    }
+
     /// Determine if the dock at the given placement is open.
     pub fn is_dock_open(&self, placement: DockPlacement, cx: &App) -> bool {
         match placement {
@@ -1165,37 +1185,40 @@ impl Render for DockArea {
                         }
                         _ => {
                             // render dock
+                            //
+                            // The bottom dock spans the full window width,
+                            // below the side docks (upstream nests it inside
+                            // the center column instead).
                             this.child(
                                 div()
                                     .flex()
-                                    .flex_row()
+                                    .flex_col()
                                     .h_full()
-                                    // Left dock
-                                    .when_some(self.left_dock.clone(), |this, dock| {
-                                        this.child(div().flex().flex_none().child(dock))
-                                    })
-                                    // Center
                                     .child(
                                         div()
                                             .flex()
+                                            .flex_row()
                                             .flex_1()
-                                            .flex_col()
                                             .overflow_hidden()
-                                            // Top center
+                                            // Left dock
+                                            .when_some(self.left_dock.clone(), |this, dock| {
+                                                this.child(div().flex().flex_none().child(dock))
+                                            })
+                                            // Center
                                             .child(
                                                 div()
                                                     .flex_1()
                                                     .overflow_hidden()
                                                     .child(self.render_items(window, cx)),
                                             )
-                                            // Bottom Dock
-                                            .when_some(self.bottom_dock.clone(), |this, dock| {
-                                                this.child(dock)
+                                            // Right Dock
+                                            .when_some(self.right_dock.clone(), |this, dock| {
+                                                this.child(div().flex().flex_none().child(dock))
                                             }),
                                     )
-                                    // Right Dock
-                                    .when_some(self.right_dock.clone(), |this, dock| {
-                                        this.child(div().flex().flex_none().child(dock))
+                                    // Bottom Dock
+                                    .when_some(self.bottom_dock.clone(), |this, dock| {
+                                        this.child(dock)
                                     }),
                             )
                         }

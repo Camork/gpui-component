@@ -1,2 +1,7 @@
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "link-arg=/STACK:8000000"]
+
+[env]
+# aws-lc-sys needs _WIN32_WINNT >= 0x0600 (Vista) for SRWLock APIs when
+# cross-compiling with clang (which doesn't define it by default for -gnu).
+CFLAGS_x86_64_pc_windows_gnu = "-D_WIN32_WINNT=0x0601"

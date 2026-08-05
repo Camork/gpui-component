@@ -383,7 +383,11 @@ impl Dock {
 
 impl Render for Dock {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
-        if !self.open && !self.placement.is_bottom() {
+        // A closed dock renders nothing, for every placement. The upstream
+        // behavior keeps a 29px title strip for the bottom dock so its tabs
+        // stay visible to reopen, but kftrace toggles docks from the top bar,
+        // so the closed bottom dock should hide just like the side docks.
+        if !self.open {
             return div();
         }
 
@@ -396,10 +400,6 @@ impl Render for Dock {
                 DockPlacement::Left | DockPlacement::Right => this.h_flex().h_full().w(self.size),
                 DockPlacement::Bottom => this.w_full().h(self.size),
                 DockPlacement::Center => unreachable!(),
-            })
-            // Bottom Dock should keep the title bar, then user can click the Toggle button
-            .when(!self.open && self.placement.is_bottom(), |this| {
-                this.h(px(29.))
             })
             .map(|this| match &self.panel {
                 DockItem::Split { view, .. } => this.child(view.clone()),

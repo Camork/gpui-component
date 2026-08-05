@@ -36,7 +36,6 @@ use super::{
 
 #[derive(Clone)]
 struct TabState {
-    closable: bool,
     zoomable: Option<PanelControl>,
     draggable: bool,
     droppable: bool,
@@ -217,9 +216,12 @@ impl Panel for TabPanel {
 
     fn dump(&self, cx: &App) -> PanelState {
         let mut state = PanelState::new(self);
+        // Set unconditionally (not inside the loop): an empty tab group must
+        // still dump as a Tabs state, otherwise it restores as an
+        // unregistered "TabPanel" panel (InvalidPanel).
+        state.info = PanelInfo::tabs(self.active_ix);
         for panel in self.panels.iter() {
             state.add_child(panel.dump(cx));
-            state.info = PanelInfo::tabs(self.active_ix);
         }
         state
     }
@@ -456,6 +458,7 @@ impl TabPanel {
     ) {
         self.detach_panel(panel, window, cx);
         self.remove_self_if_empty(window, cx);
+        self.hide_dock_if_empty(window, cx);
         cx.emit(PanelEvent::ZoomOut);
         cx.emit(PanelEvent::LayoutChanged);
     }
@@ -497,6 +500,45 @@ impl TabPanel {
         }
     }
 
+    /// Hide the containing dock if removing a panel left it empty. Handles both
+    /// a bare tab group (root TabPanel) and a wrapped one (root StackPanel that
+    /// lost its last child).
+    fn hide_dock_if_empty(&self, window: &mut Window, cx: &mut Context<Self>) {
+        // Deferred: `remove_panel` also runs inside a `DockArea` update (e.g.
+        // via `DockArea::remove_panel`), and reentering `DockArea::update`
+        // here would panic with a double lease. The dock hides one frame
+        // later instead.
+        let dock_area = self.dock_area.clone();
+        window.defer(cx, move |window, cx| {
+            if let Some(dock_area) = dock_area.upgrade() {
+                _ = dock_area.update(cx, |dock_area, cx| {
+                    dock_area.hide_dock_if_empty(window, cx);
+                });
+            }
+        });
+    }
+
+    /// Whether this tab group currently holds any non-movable panel (e.g.
+    /// the center source editors).
+    fn holds_non_movable(&self, cx: &App) -> bool {
+        self.panels.iter().any(|panel| !panel.movable(cx))
+    }
+
+    /// Whether a dragged panel may be dropped on this tab group. Editor
+    /// groups are sealed: a non-movable panel may only move between groups
+    /// that hold non-movable panels, and a movable panel can never be
+    /// dropped into one.
+    ///
+    /// An empty tab group can only be the bare center root (tab groups
+    /// elsewhere remove themselves when they empty); it remains the editor
+    /// area, so it accepts only non-movable panels.
+    fn accepts_drop(&self, panel: &Arc<dyn PanelView>, cx: &App) -> bool {
+        if self.panels.is_empty() {
+            return !panel.movable(cx);
+        }
+        panel.movable(cx) != self.holds_non_movable(cx)
+    }
+
     pub(super) fn set_collapsed(
         &mut self,
         collapsed: bool,
@@ -521,24 +563,7 @@ impl TabPanel {
             return true;
         }
 
-        self.stack_panel.is_none()
-    }
-
-    /// Return true if self or parent only have last panel.
-    ///
-    /// Only visible panels are counted, so a hidden panel does not keep the
-    /// last visible panel draggable/closable (which could otherwise leave the
-    /// dock visually empty and undroppable).
-    fn is_last_panel(&self, cx: &App) -> bool {
-        if let Some(parent) = &self.stack_panel {
-            if let Some(stack_panel) = parent.upgrade() {
-                if !stack_panel.read(cx).is_last_panel(cx) {
-                    return false;
-                }
-            }
-        }
-
-        self.visible_panels(cx).count() <= 1
+        false
     }
 
     /// Return all visible panels
@@ -553,10 +578,8 @@ impl TabPanel {
     }
 
     /// Return true if the tab panel is draggable.
-    ///
-    /// E.g. if the parent and self only have one panel, it is not draggable.
     fn draggable(&self, cx: &App) -> bool {
-        !self.is_locked(cx) && !self.is_last_panel(cx)
+        !self.is_locked(cx)
     }
 
     /// Return true if the tab panel is droppable.
@@ -579,6 +602,13 @@ impl TabPanel {
         let zoomed = self.zoomed;
         let view = cx.entity().clone();
         let zoomable_toolbar_visible = state.zoomable.map_or(false, |v| v.toolbar_visible());
+
+        // Only keep the "⋯" overflow menu when the panel contributes its own
+        // items; zoom and close are surfaced as flat toolbar buttons instead.
+        let has_panel_menu = self.active_panel(cx).is_some_and(|panel| {
+            let menu = PopupMenu::new(cx);
+            !panel.dropdown_menu(menu, window, cx).is_empty()
+        });
 
         h_flex()
             .gap_1()
@@ -616,38 +646,19 @@ impl TabPanel {
                     this
                 }
             })
-            .child(
-                Button::new("menu")
-                    .icon(IconName::Ellipsis)
-                    .xsmall()
-                    .ghost()
-                    .tab_stop(false)
-                    .dropdown_menu({
-                        let zoomable = state.zoomable.map_or(false, |v| v.menu_visible());
-                        let closable = state.closable;
-
-                        move |menu, window, cx| {
-                            view.update(cx, |this, cx| {
-                                this.dropdown_menu(menu, window, cx)
-                                    .separator()
-                                    .menu_with_disabled(
-                                        if zoomed {
-                                            t!("Dock.Zoom Out")
-                                        } else {
-                                            t!("Dock.Zoom In")
-                                        },
-                                        Box::new(ToggleZoom),
-                                        !zoomable,
-                                    )
-                                    .when(closable, |this| {
-                                        this.separator()
-                                            .menu(t!("Dock.Close"), Box::new(ClosePanel))
-                                    })
-                            })
-                        }
-                    })
-                    .anchor(Anchor::TopRight),
-            )
+            .when(has_panel_menu, |this| {
+                this.child(
+                    Button::new("menu")
+                        .icon(IconName::Ellipsis)
+                        .xsmall()
+                        .ghost()
+                        .tab_stop(false)
+                        .dropdown_menu(move |menu, window, cx| {
+                            view.update(cx, |this, cx| this.dropdown_menu(menu, window, cx))
+                        })
+                        .anchor(Anchor::TopRight),
+                )
+            })
     }
 
     fn render_dock_toggle_button(
@@ -816,6 +827,22 @@ impl TabPanel {
                         .ml_1()
                         .gap_1()
                         .child(self.render_toolbar(&state, window, cx))
+                        // The single-panel header has no TabBar, so the
+                        // per-tab close button never renders; offer it here
+                        // for panels that opt in (`closable_in_header`).
+                        .when(panel.closable_in_header(cx), |this| {
+                            let panel = panel.clone();
+                            this.child(
+                                Button::new("dock-panel-close")
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(IconName::Close)
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        cx.stop_propagation();
+                                        this.remove_panel(panel.clone(), window, cx);
+                                    })),
+                            )
+                        })
                         .children(right_dock_button),
                 )
                 .into_any_element();
@@ -893,6 +920,22 @@ impl TabPanel {
                                 }
                             }
                         }))
+                        .when(!self.collapsed && panel.closable(cx), |this| {
+                            let panel = panel.clone();
+                            this.suffix(
+                                Button::new(format!("dock-tab-close-{ix}"))
+                                    .ghost()
+                                    .xsmall()
+                                    .mr_1()
+                                    .icon(IconName::Close)
+                                    .on_click(cx.listener(
+                                        move |this, _, window, cx| {
+                                            cx.stop_propagation();
+                                            this.remove_panel(panel.clone(), window, cx);
+                                        },
+                                    )),
+                            )
+                        })
                         .when(!droppable, |this| {
                             this.when(state.draggable, |this| {
                                 this.on_drag(
@@ -905,11 +948,17 @@ impl TabPanel {
                                 )
                             })
                             .when(state.droppable, |this| {
-                                this.drag_over::<DragPanel>(|this, _, _, cx| {
-                                    this.rounded_l_none()
-                                        .border_l_2()
-                                        .border_r_0()
-                                        .border_color(cx.theme().drag_border)
+                                let drag_view = view.clone();
+                                this.drag_over::<DragPanel>(move |style, drag, _, cx| {
+                                    if drag_view.read(cx).accepts_drop(&drag.panel, cx) {
+                                        style
+                                            .rounded_l_none()
+                                            .border_l_2()
+                                            .border_r_0()
+                                            .border_color(cx.theme().drag_border)
+                                    } else {
+                                        style
+                                    }
                                 })
                                 .on_drop(cx.listener(
                                     move |this, drag: &DragPanel, window, cx| {
@@ -929,14 +978,20 @@ impl TabPanel {
                     .flex_grow_1()
                     .min_w_16()
                     .when(state.droppable, |this| {
-                        this.drag_over::<DragPanel>(|this, _, _, cx| {
-                            this.bg(cx.theme().tokens.drop_target)
+                        let drag_view = view.clone();
+                        let drop_view = view.clone();
+                        this.drag_over::<DragPanel>(move |style, drag, _, cx| {
+                            if drag_view.read(cx).accepts_drop(&drag.panel, cx) {
+                                style.bg(cx.theme().tokens.drop_target)
+                            } else {
+                                style
+                            }
                         })
                         .on_drop(cx.listener(
                             move |this, drag: &DragPanel, window, cx| {
                                 this.will_split_placement = None;
 
-                                let ix = if drag.tab_panel == view {
+                                let ix = if drag.tab_panel == drop_view {
                                     Some(tabs_count - 1)
                                 } else {
                                     None
@@ -985,6 +1040,7 @@ impl TabPanel {
             return Empty {}.into_any_element();
         };
 
+        let view = cx.entity().clone();
         let is_render_in_tabs = self.panels.len() > 1 && self.inner_padding(cx);
 
         let placeholder = self.drop_placeholder_animation;
@@ -1021,7 +1077,16 @@ impl TabPanel {
                                     .h(animation.to.size.height),
                                 None => this.top_0().left_0().size_full(),
                             })
-                            .group_drag_over::<DragPanel>("", |this| this.visible())
+                            .drag_over::<DragPanel>({
+                                let view = view.clone();
+                                move |style, drag, _, cx| {
+                                    if view.read(cx).accepts_drop(&drag.panel, cx) {
+                                        style.visible()
+                                    } else {
+                                        style
+                                    }
+                                }
+                            })
                             .on_drop(cx.listener(|this, drag: &DragPanel, window, cx| {
                                 this.on_drop(drag, None, true, window, cx)
                             }))
@@ -1136,6 +1201,13 @@ impl TabPanel {
         let panel = drag.panel.clone();
         let is_same_tab = drag.tab_panel == cx.entity();
 
+        // Editor groups are sealed: editor panels (non-movable) may only move
+        // between editor groups; other panels can never enter one. Reorder
+        // and split within a group are unaffected.
+        if !self.accepts_drop(&panel, cx) {
+            return;
+        }
+
         // If target is same tab, and it is only one panel, do nothing.
         if is_same_tab && ix.is_none() {
             if self.will_split_placement.is_none() {
@@ -1178,6 +1250,7 @@ impl TabPanel {
         }
 
         self.remove_self_if_empty(window, cx);
+        self.hide_dock_if_empty(window, cx);
         cx.emit(PanelEvent::LayoutChanged);
     }
 
@@ -1394,7 +1467,6 @@ impl Render for TabPanel {
         let focus_handle = self.focus_handle(cx);
         let active_panel = self.active_panel(cx);
         let state = TabState {
-            closable: self.closable(cx),
             draggable: self.draggable(cx),
             droppable: self.droppable(cx),
             zoomable: self.zoomable(cx),
@@ -1408,8 +1480,23 @@ impl Render for TabPanel {
             .size_full()
             .overflow_hidden()
             .bg(cx.theme().tokens.background)
-            .child(self.render_title_bar(&state, window, cx))
-            .child(self.render_active_panel(&state, window, cx))
+            // Only the bare center root can be persistently empty (empty tab
+            // groups elsewhere remove themselves); show a placeholder instead
+            // of an empty tab bar there.
+            .when(self.panels.is_empty(), |this| {
+                this.child(
+                    v_flex()
+                        .size_full()
+                        .items_center()
+                        .justify_center()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("No file is open"),
+                )
+            })
+            .when(!self.panels.is_empty(), |this| {
+                this.child(self.render_title_bar(&state, window, cx))
+                    .child(self.render_active_panel(&state, window, cx))
+            })
     }
 }
 

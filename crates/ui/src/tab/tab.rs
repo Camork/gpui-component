@@ -625,7 +625,12 @@ impl RenderOnce for Tab {
         }
         let radius = self.variant.radius(self.size, cx);
         let inner_radius = self.variant.inner_radius(self.size, cx);
-        let inner_paddings = self.variant.inner_paddings(self.size);
+        let mut inner_paddings = self.variant.inner_paddings(self.size);
+        // When the tab carries a trailing element (e.g. a close button), drop
+        // the right padding so the text and the suffix do not look far apart.
+        if self.suffix.is_some() {
+            inner_paddings.right = px(0.);
+        }
         let inner_margins = self.variant.inner_margins(self.size);
         let inner_height = self.variant.inner_height(self.size);
         let height = self.variant.height(self.size);

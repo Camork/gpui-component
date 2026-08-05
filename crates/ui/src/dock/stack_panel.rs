@@ -44,9 +44,11 @@ impl Panel for StackPanel {
     fn dump(&self, cx: &App) -> PanelState {
         let sizes = self.state.read(cx).sizes().clone();
         let mut state = PanelState::new(self);
+        // Set unconditionally (not inside the loop): an empty stack must still
+        // dump as a Stack state (see TabPanel::dump).
+        state.info = PanelInfo::stack(sizes, self.axis);
         for panel in &self.panels {
             state.add_child(panel.dump(cx));
-            state.info = PanelInfo::stack(sizes.clone(), self.axis);
         }
 
         state
@@ -77,21 +79,6 @@ impl StackPanel {
     /// The first level of the stack panel is root, will not have a parent.
     fn is_root(&self) -> bool {
         self.parent.is_none()
-    }
-
-    /// Return true if self or parent only have last panel.
-    pub(super) fn is_last_panel(&self, cx: &App) -> bool {
-        if self.panels.len() > 1 {
-            return false;
-        }
-
-        if let Some(parent) = &self.parent {
-            if let Some(parent) = parent.upgrade() {
-                return parent.read(cx).is_last_panel(cx);
-            }
-        }
-
-        true
     }
 
     pub(super) fn panels_len(&self) -> usize {

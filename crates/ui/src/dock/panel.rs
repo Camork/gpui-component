@@ -93,6 +93,22 @@ pub trait Panel: EventEmitter<PanelEvent> + Render + Focusable {
         true
     }
 
+    /// Whether the single-panel title header (rendered when this panel is the
+    /// only visible panel of its tab group, in place of the tab bar) shows a
+    /// close button. Default is `false`: closing the last panel of a dock
+    /// group hides the whole dock, so opt in per panel (e.g. center editor
+    /// tabs, where closing the last one just leaves an empty editor area).
+    fn closable_in_header(&self, cx: &App) -> bool {
+        false
+    }
+
+    /// Whether the panel may be dragged out of its current area into another
+    /// dock. Editor panels (e.g. the center source editor) return `false` so
+    /// they stay in the center while still being reorderable/splittable there.
+    fn movable(&self, cx: &App) -> bool {
+        true
+    }
+
     /// Return `PanelControl` if the panel is zoomable, default is `PanelControl::Menu`.
     ///
     /// This method called in Panel render, we should make sure it is fast.
@@ -180,6 +196,8 @@ pub trait PanelView: 'static + Send + Sync {
     fn title_suffix(&self, window: &mut Window, cx: &mut App) -> Option<AnyElement>;
     fn title_style(&self, cx: &App) -> Option<TitleStyle>;
     fn closable(&self, cx: &App) -> bool;
+    fn closable_in_header(&self, cx: &App) -> bool;
+    fn movable(&self, cx: &App) -> bool;
     fn zoomable(&self, cx: &App) -> Option<PanelControl>;
     fn visible(&self, cx: &App) -> bool;
     fn set_active(&self, active: bool, window: &mut Window, cx: &mut App);
@@ -224,6 +242,14 @@ impl<T: Panel> PanelView for Entity<T> {
 
     fn closable(&self, cx: &App) -> bool {
         self.read(cx).closable(cx)
+    }
+
+    fn closable_in_header(&self, cx: &App) -> bool {
+        self.read(cx).closable_in_header(cx)
+    }
+
+    fn movable(&self, cx: &App) -> bool {
+        self.read(cx).movable(cx)
     }
 
     fn zoomable(&self, cx: &App) -> Option<PanelControl> {
