@@ -1,0 +1,17 @@
+[package]
+name = "asm_inline_spike"
+description = "Spike: source-inline-asm view with tree-sitter-c highlighting (reuses gpui-component highlighter, custom editor core)."
+version = "0.0.0"
+publish = false
+edition.workspace = true
+
+[dependencies]
+gpui.workspace = true
+gpui_platform.workspace = true
+
+# Reuse gpui-component's tree-sitter-based highlighter for source-row
+# syntax coloring. Only the editor core (asm-inline rows) stays custom.
+gpui-component = { workspace = true, features = ["tree-sitter", "tree-sitter-c"] }
+
+[lints]
+workspace = true
