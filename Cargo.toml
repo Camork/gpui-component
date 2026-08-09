@@ -22,6 +22,7 @@ members = [
     "examples/root_borderless",
     "examples/table_in_scrollable",
     "examples/markdown_table",
+    "examples/flamegraph_spike",
 ]
 resolver = "2"
 
